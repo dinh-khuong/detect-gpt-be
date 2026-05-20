@@ -1,0 +1,9 @@
+*.pkl
+answer*.json
+*.parquet
+*.pt
+*.npy
+*.sqlite3
+*__pycache__*
+*.env
+*cpython-314.pyc
