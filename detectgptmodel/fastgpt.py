@@ -22,7 +22,7 @@ def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_tem
 
     org_token_probs = tch.gather(org_probs, 2, target_ids).squeeze(-1)
     dist = Categorical(probs=perterbated_probs[0])
-    n_sample = 1000
+    n_sample = 5000
     perterbated_samples = dist.sample((n_sample, )).unsqueeze(-1)
 
     perterbated_token_probs = tch.gather(org_probs.expand(n_sample, -1, -1), 2, perterbated_samples).squeeze(-1)
@@ -93,11 +93,12 @@ class FastGptDetect:
         return logits, target_ids
 
     def sample_perturbate_text(self, input: str, sample: float, temps: list[tuple[float, float]]):
+        org_probs = []
+        perturbated_probs = []
+
         logits, target_ids = self.get_text_logits(input, sample)
         target_ids = target_ids.unsqueeze(-1)
 
-        org_probs = []
-        perturbated_probs = []
         for prob_temp, sampling_temp in temps:
             org_token_probs, perturbated_token_probs = pertubating_text_logits(logits, target_ids, prob_temp=prob_temp, sampling_temp=sampling_temp)
             org_probs.append(org_token_probs)
@@ -152,10 +153,6 @@ class GPTChecker:
         # fast_gpt = get_sampling_discrepancy(org_log, per_log)
 
         tokens = self.fast_gpt.tokenizer(text)
-        logs_1 = self.fast_gpt.sample_perturbate_text(text, 0.2, [(0.8, 0.8), (0.8, 1.0), (0.8, 1.2), (0.8, 3.0), (1.0, 5.0), (0.8, 30), (0.8, 40)])
-        fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in logs_1]
-        # logs_2 = self.fast_gpt.log_perterbate(text, 0.2, [(0.8, 0.8), (0.8, 1), (0.8, 1.2), (1, 0.8), (1, 1), (1, 1.2)])
-        # fast_gpts_2 = [get_sampling_discrepancy(log[0], log[1]).item() for log in logs_2]
         ttr = calculate_ttr(tokens)
         punct = calc_punctuation(text, string.punctuation) / len(text)
         text_blob = TextBlob(text)
@@ -164,7 +161,7 @@ class GPTChecker:
         flesch = textstat.flesch_reading_ease(text)
         gunning_fog = textstat.gunning_fog(text)
 
-        x = [
+        base_features = [
             ttr,
             punct,
             polarity,
@@ -172,13 +169,42 @@ class GPTChecker:
             flesch,
             gunning_fog,
         ]
-        np_pertur_dist_1 = np.concatenate(np.array(fast_gpts_1))
-        x.extend(np_pertur_dist_1)
-        print(len(x), np_pertur_dist_1.shape)
-        # x.extend(fast_gpts_2)
-        predict = self.model.predict_proba(np.array([x]))[0][1].item()
+
+        logs_1 = self.fast_gpt.sample_perturbate_text(text, 0.2, [
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+        ])
+        
+        fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in logs_1]
+        
+        # 1. DO NOT use .mean(axis=0). Keep it as a 14x12 matrix.
+        np_pertur_dist_1 = np.concatenate(np.array(fast_gpts_1)).reshape(14, 12)
+
+        # 2. Build a batch matrix of 14 instances
+        # For each of the 14 shapes, we append the 6 base features to its 12 perturbation values
+        X_batch = []
+        for row in np_pertur_dist_1:
+            # Combined feature vector length: 6 + 12 = 18 elements
+            combined_features = base_features + row.tolist()
+            X_batch.append(combined_features)
+            
+        X_batch = np.array(X_batch) # Shape is now exactly (14, 18)
+        # 'ttr', 'punct', 'polarity', 'subjectivity', 'flesch', 'gunning_fog'
+        predictions = np.mean(self.model.predict_proba(X_batch)[:, 1])
 
         #'fast_gpt', 'ttr', 'puct', 'polarity', 'subjectivity', 'flesch', 'gunning_fog'
-        return {"fast_gpt": predict * 100, "polarity": polarity, "subjectivity": subjectivity}
+        return {"fast_gpt": predictions * 100, "polarity": polarity, "subjectivity": subjectivity}
         # return self.model.predict(np.array([[fast_gpt, ttr, puct, polarity, subjectivity, gunning_fog]]))
 
