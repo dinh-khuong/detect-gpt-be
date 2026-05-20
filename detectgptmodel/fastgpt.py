@@ -16,36 +16,26 @@ import textstat
 import joblib
 import math
 
-def _pertubating_text_logits(
-    logits: tch.Tensor,
-    target_ids: tch.Tensor,
-    prob_temp: float = 0.8,
-    sampling_temp: float = 1.2,
-) -> tuple[tch.Tensor, tch.Tensor]:
+def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_temp: float = 0.8, sampling_temp: float = 1.2) -> tuple[tch.Tensor, tch.Tensor]:
     perterbated_probs = F.softmax(logits / sampling_temp, dim=-1)
-    org_probs = F.softmax(logits / prob_temp, dim=-1)
+    org_probs = F.log_softmax(logits / prob_temp, dim=-1)
 
     org_token_probs = tch.gather(org_probs, 2, target_ids).squeeze(-1)
-    dist = Categorical(perterbated_probs[0])
+    dist = Categorical(probs=perterbated_probs[0])
     n_sample = 1000
-    perterbated_samples = dist.sample((n_sample,)).unsqueeze(-1)
+    perterbated_samples = dist.sample((n_sample, )).unsqueeze(-1)
 
-    perterbated_token_probs = tch.gather(
-        org_probs.expand(n_sample, -1, -1), 2, perterbated_samples
-    ).squeeze(-1)
+    perterbated_token_probs = tch.gather(org_probs.expand(n_sample, -1, -1), 2, perterbated_samples).squeeze(-1)
 
-    ep = 1e-10
+    # ep = 1e-10
     # [1, probs], [n_sample, probs]
-    # [1, probs], [1, probs]
-    return (org_token_probs + ep).log(), (perterbated_token_probs + ep).log().mean(
-        dim=-1
-    )
-
+    return org_token_probs, perterbated_token_probs.mean(dim=-1)
 
 class FastGptDetect:
     def __init__(self) -> None:
         # model_name = "roberta-large-mnli"
-        model_name = "roberta-base",
+        model_name = "roberta-base"
+        print("load model: " + model_name)
         self.configuration: PreTrainedConfig = AutoConfig.from_pretrained(
             model_name
         )
@@ -74,33 +64,27 @@ class FastGptDetect:
 
         return masked_logits, target_ids
 
-    def _get_text_logits(
-        self, input: str, sample: float
-    ) -> tuple[tch.Tensor, tch.Tensor]:
+
+    def get_text_logits(self, input: str, sample: float) -> tuple[tch.Tensor, tch.Tensor]:
         logits = []
         target_ids = []
         inputs = self.tokenizer(
             input,
-            # truncation=True,
             # max_length=configuration.max_position_embeddings - 2,
-            return_tensors="pt",
+            return_tensors="pt"
         )
         max_position_token = self.configuration.max_position_embeddings - 2
         idx = 0
         while idx < inputs.input_ids.shape[1]:
             inputs_current = {
-                "input_ids": inputs.input_ids[:, idx : idx + max_position_token],
-                "attention_mask": inputs.attention_mask[
-                    :, idx : idx + max_position_token
-                ],
+                'input_ids': inputs.input_ids[:, idx:idx+max_position_token],
+                'attention_mask': inputs.attention_mask[:, idx:idx+max_position_token],
             }
-            masked_logist, masked_target_ids = self._samples_probs(
-                inputs_current, sample
-            )
+            masked_logist, masked_target_ids = self._samples_probs(inputs_current, sample)
             logits.append(masked_logist)
             target_ids.append(masked_target_ids)
 
-            idx += max_position_token
+            idx += inputs_current['input_ids'].shape[1]
 
         logits = tch.cat(logits, dim=1)
         target_ids = tch.cat(target_ids, dim=-1)
@@ -108,18 +92,14 @@ class FastGptDetect:
         # [change_seq, logit], [1, change_seq]
         return logits, target_ids
 
-    def log_perterbate(
-        self, input: str, sample: float, temps: list[tuple[float, float]]
-    ):
-        logits, target_ids = self._get_text_logits(input, sample)
+    def sample_perturbate_text(self, input: str, sample: float, temps: list[tuple[float, float]]):
+        logits, target_ids = self.get_text_logits(input, sample)
         target_ids = target_ids.unsqueeze(-1)
 
         org_probs = []
         perturbated_probs = []
         for prob_temp, sampling_temp in temps:
-            org_token_probs, perturbated_token_probs = _pertubating_text_logits(
-                logits, target_ids, prob_temp=prob_temp, sampling_temp=sampling_temp
-            )
+            org_token_probs, perturbated_token_probs = pertubating_text_logits(logits, target_ids, prob_temp=prob_temp, sampling_temp=sampling_temp)
             org_probs.append(org_token_probs)
             perturbated_probs.append(perturbated_token_probs)
 
@@ -130,18 +110,22 @@ class FastGptDetect:
 
 def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     r"""
-    org_x: [seq]
-    perturbation_x: [n_samples, seq]
+        org_x: [seq]
+        perturbation_x: [n_samples, seq]
     """
-    org_x_log = -org_x
-    perturbation_x_log = -perturbation_x
+    # ep = 1e-10
+    org_x_log = org_x
+    perturbation_x_log = perturbation_x
 
     multitude = perturbation_x_log.mean()
-    perturbation_std = perturbation_x_log.std()
-    # score = (org_x_log.mean() - multitude) / perturbation_std
-    score = (org_x_log - multitude).mean() / perturbation_std
+    org_mul = org_x_log.mean()
+    # perplexity = (-org_mul).exp()
 
-    return score
+    perturbation_std = perturbation_x_log.std()
+    # score = (org_x_log - multitude).mean() / perturbation_std
+    score = (org_mul - multitude) / perturbation_std
+    # score = (org_x_log - multitude).mean()
+    return score, perturbation_std
 
 
 def calculate_ttr(text_tokens):
@@ -168,8 +152,8 @@ class GPTChecker:
         # fast_gpt = get_sampling_discrepancy(org_log, per_log)
 
         tokens = self.fast_gpt.tokenizer(text)
-        logs_1 = self.fast_gpt.log_perterbate(text, 0.2, [(0.8, 0.8), (0.8, 1), (0.8, 1.2), (1, 0.8), (1, 1), (1, 1.2)])
-        fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]).item() for log in logs_1]
+        logs_1 = self.fast_gpt.sample_perturbate_text(text, 0.2, [(0.8, 0.8), (0.8, 1.0), (0.8, 1.2), (0.8, 3.0), (1.0, 5.0), (0.8, 30), (0.8, 40)])
+        fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in logs_1]
         # logs_2 = self.fast_gpt.log_perterbate(text, 0.2, [(0.8, 0.8), (0.8, 1), (0.8, 1.2), (1, 0.8), (1, 1), (1, 1.2)])
         # fast_gpts_2 = [get_sampling_discrepancy(log[0], log[1]).item() for log in logs_2]
         ttr = calculate_ttr(tokens)
@@ -188,7 +172,9 @@ class GPTChecker:
             flesch,
             gunning_fog,
         ]
-        x.extend(fast_gpts_1)
+        np_pertur_dist_1 = np.concatenate(np.array(fast_gpts_1))
+        x.extend(np_pertur_dist_1)
+        print(len(x), np_pertur_dist_1.shape)
         # x.extend(fast_gpts_2)
         predict = self.model.predict_proba(np.array([x]))[0][1].item()
 

@@ -9,7 +9,7 @@ from rest_framework import generics, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from detectgptmodel.fastgpt import get_sampling_discrepancy
-from ..detectgptmodel import gptDetectModel
+from . import gptDetectModel
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.values('id', 'username')
