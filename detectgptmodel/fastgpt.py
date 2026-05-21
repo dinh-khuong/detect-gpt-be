@@ -33,8 +33,8 @@ def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_tem
 
 class FastGptDetect:
     def __init__(self) -> None:
-        # model_name = "roberta-large-mnli"
-        model_name = "roberta-base"
+        model_name = "roberta-large-mnli"
+        # model_name = "roberta-base"
         print("load model: " + model_name)
         self.configuration: PreTrainedConfig = AutoConfig.from_pretrained(
             model_name
@@ -154,7 +154,7 @@ class GPTChecker:
 
         tokens = self.fast_gpt.tokenizer(text)
         ttr = calculate_ttr(tokens)
-        punct = calc_punctuation(text, string.punctuation) / len(text)
+        punct = calc_punctuation(text, "-.") / len(text)
         text_blob = TextBlob(text)
         polarity = text_blob.polarity
         subjectivity = text_blob.subjectivity
@@ -171,26 +171,27 @@ class GPTChecker:
         ]
 
         logs_1 = self.fast_gpt.sample_perturbate_text(text, 0.2, [
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+          # (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+          # (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
         ])
         
         fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in logs_1]
         
         # 1. DO NOT use .mean(axis=0). Keep it as a 14x12 matrix.
-        np_pertur_dist_1 = np.concatenate(np.array(fast_gpts_1)).reshape(14, 12)
+        # np_pertur_dist_1 = np.concatenate(np.array(fast_gpts_1)).reshape(12, 12)
+        np_pertur_dist_1 = np.array(fast_gpts_1).reshape(12, 12)
 
         # 2. Build a batch matrix of 14 instances
         # For each of the 14 shapes, we append the 6 base features to its 12 perturbation values
