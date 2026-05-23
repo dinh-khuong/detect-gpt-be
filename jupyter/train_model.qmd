@@ -68,27 +68,7 @@ df_fast
 
 ```{python}
 def get_base_features(text: str):
-  tokens = detect_gpt.tokenizer(text)
-  ttr = calculate_ttr(tokens)
-  punct = calc_punctuation(text) / len(text)
-  sentence_std = calculate_sentence_length_std(text)
-  text_blob = TextBlob(text)
-  polarity = text_blob.polarity
-  subjectivity = text_blob.subjectivity
-  flesch = textstat.flesch_reading_ease(text)
-  gunning_fog = textstat.gunning_fog(text)
-
-  base_features = [
-    ttr,
-    punct,
-    sentence_std,
-    polarity,
-    subjectivity,
-    flesch,
-    gunning_fog,
-  ]
-
-  return base_features
+  return detect_gpt.get_base_features(text)
 
 results = np.array([get_base_features(text) for text in tqdm(df['text'].to_list(), desc="Processing", position=0, leave=True)])
 
@@ -123,7 +103,6 @@ y = df_fast_flat["Is AI"].cast(pl.Float32).to_numpy()
 ```
 
 ```{python}
-
 def train_model(model, rocs, accs, f1s, recalls):
   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=True)
 
@@ -189,13 +168,8 @@ joblib.dump(model, 'models/model_gradient.pkl')
 ```
 
 ```{python}
-
-```
-
-```{python}
 print(np.mean(rocs))
 sns.histplot(rocs)
 # plt.savefig('rocs_models_gpt_2.pdf')
 # plt.savefig('rocs_models_dolly.pdf')
 ```
-

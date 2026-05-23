@@ -4,7 +4,7 @@ import sys
 def get_model():
     # Only load if we aren't running a migration/test command
     if 'runserver' in sys.argv :
-        return GPTChecker()
+        return GPTChecker(model="roberta-large-mnli")
 
     return None
     

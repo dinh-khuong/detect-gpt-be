@@ -33,19 +33,21 @@ def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_tem
     return org_token_probs, perterbated_token_probs.mean(dim=-1)
 
 class FastGptDetect:
-    def __init__(self) -> None:
-        model_name = "roberta-large-mnli"
-        # model_name = "roberta-base"
-        print("load model: " + model_name)
+    def __init__(self, model="roberta-base") -> None:
+        # model = "roberta-large-mnli"
+        print("load model: " + model)
+        self.device = tch.device("cuda" if tch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
         self.configuration: PreTrainedConfig = AutoConfig.from_pretrained(
-            model_name
+            model
         )
         self.tokenizer: RobertaTokenizer = RobertaTokenizer.from_pretrained(
-            model_name, config=self.configuration
+            model
         )
         self.model: RobertaModel = AutoModelForMaskedLM.from_pretrained(
-            model_name, config=self.configuration
+            model
         )
+        self.model.to(self.device)
 
     def _samples_probs(self, inputs, sample: float) -> tuple[tch.Tensor, tch.Tensor]:
         # perterbating text
@@ -74,6 +76,8 @@ class FastGptDetect:
             # max_length=configuration.max_position_embeddings - 2,
             return_tensors="pt"
         )
+
+        inputs = inputs.to(self.device)
         max_position_token = self.configuration.max_position_embeddings - 2
         idx = 0
         while idx < inputs.input_ids.shape[1]:
@@ -109,6 +113,29 @@ class FastGptDetect:
         # [feat, probs], [feat, probs]
         return list(zip(org_probs, perturbated_probs))
 
+    def get_base_features(self, text: str):
+        tokens = self.tokenizer(text)
+        ttr = calculate_ttr(tokens)
+        punct = calc_punctuation(text, "-") / len(text)
+        sentence_std = calculate_sentence_length_std(text)
+        text_blob = TextBlob(text)
+        polarity = text_blob.polarity
+        subjectivity = text_blob.subjectivity
+        flesch = textstat.flesch_reading_ease(text)
+        gunning_fog = textstat.gunning_fog(text)
+
+        base_features = [
+            ttr,
+            punct,
+            sentence_std,
+            polarity,
+            subjectivity,
+            flesch,
+            gunning_fog,
+        ]
+
+        return base_features
+
     def predict(self, text: str):
         value = self.sample_perturbate_text(text, 0.2, [
             (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
@@ -128,7 +155,7 @@ class FastGptDetect:
         ])
         fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in value]
 
-        return np.array(fast_gpts_1).reshape(14, 12).mean(axis=0)
+        return tch.stack(fast_gpts_1).reshape(14, 12).mean(dim=0)
 
 def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     r"""
@@ -147,7 +174,7 @@ def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     # score = (org_x_log - multitude).mean() / perturbation_std
     score = (org_mul - multitude) / perturbation_std
     # score = (org_x_log - multitude).mean()
-    return score, perturbation_std
+    return tch.tensor([score, perturbation_std])
 
 
 def calculate_ttr(text_tokens):
@@ -183,35 +210,13 @@ def calculate_sentence_length_std(text):
     return np.std(lengths)
 
 class GPTChecker:
-    def __init__(self):
-        self.fast_gpt = FastGptDetect()
+    def __init__(self, model="roberta-base"):
+        self.fast_gpt = FastGptDetect(model)
         self.model = joblib.load("models/model_gradient.pkl")
 
-    def get_base_features(self, text: str):
-        tokens = self.fast_gpt.tokenizer(text)
-        ttr = calculate_ttr(tokens)
-        punct = calc_punctuation(text) / len(text)
-        sentence_std = calculate_sentence_length_std(text)
-        text_blob = TextBlob(text)
-        polarity = text_blob.polarity
-        subjectivity = text_blob.subjectivity
-        flesch = textstat.flesch_reading_ease(text)
-        gunning_fog = textstat.gunning_fog(text)
-
-        base_features = [
-            ttr,
-            punct,
-            sentence_std,
-            polarity,
-            subjectivity,
-            flesch,
-            gunning_fog,
-        ]
-
-        return base_features
 
     def predict(self, text: str):
-        base_features = self.get_base_features(text)
+        base_features = self.fast_gpt.get_base_features(text)
         fast_gpt = self.fast_gpt.predict(text)
 
         combined_features = base_features + fast_gpt.tolist()
