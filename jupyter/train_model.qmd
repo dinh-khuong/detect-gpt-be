@@ -1,0 +1,201 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .qmd
+      format_name: quarto
+      format_version: '1.0'
+      jupytext_version: 1.19.1
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+```{python}
+from detectgptmodel.fastgpt import FastGptDetect, get_sampling_discrepancy, calculate_ttr, calc_punctuation,calculate_sentence_length_std
+import polars as pl
+import polars.selectors as cs
+import numpy as np
+from textblob import TextBlob
+from tqdm import tqdm
+import textstat
+import seaborn as sns
+import joblib
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, recall_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from scipy.stats import loguniform
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.decomposition import PCA
+```
+
+```{python}
+detect_gpt = FastGptDetect()
+```
+
+```{python}
+N_SAMPLE_SIZE = 1000
+dolly_df = pl.read_parquet("data/dolly_response.parquet")
+xsum_df = pl.read_parquet("data/xsum.parquet").rename({'document': 'text'})['text', ].with_columns(pl.lit(False).alias("Is AI")) \
+.filter(~pl.col("text").str.split(' ').list.len()> 200)[:N_SAMPLE_SIZE]
+df_gpt = dolly_df.sample(shuffle=True, n=N_SAMPLE_SIZE)
+
+df = df_gpt.extend(xsum_df)
+df = df.sample(shuffle=True, fraction=1)
+df
+```
+
+```{python}
+def sample_text(text: str):
+  return detect_gpt.predict(text)
+```
+
+```{python}
+results = [sample_text(text) for text in tqdm(df['text'].to_list(), desc="Processing", position=0, leave=True)]
+
+# 2. Attach the results back to the DataFrame as a new Series
+df_fast = df.with_columns(
+    fast_gpt = pl.Series(results, dtype=pl.List(pl.Float32))
+)
+
+df_fast
+```
+
+```{python}
+def get_base_features(text: str):
+  tokens = detect_gpt.tokenizer(text)
+  ttr = calculate_ttr(tokens)
+  punct = calc_punctuation(text) / len(text)
+  sentence_std = calculate_sentence_length_std(text)
+  text_blob = TextBlob(text)
+  polarity = text_blob.polarity
+  subjectivity = text_blob.subjectivity
+  flesch = textstat.flesch_reading_ease(text)
+  gunning_fog = textstat.gunning_fog(text)
+
+  base_features = [
+    ttr,
+    punct,
+    sentence_std,
+    polarity,
+    subjectivity,
+    flesch,
+    gunning_fog,
+  ]
+
+  return base_features
+
+results = np.array([get_base_features(text) for text in tqdm(df['text'].to_list(), desc="Processing", position=0, leave=True)])
+
+df_fast = df_fast.with_columns(
+  ttr = results[:, 0],
+  punct = results[:, 1],
+  sentence_std = results[:, 2],
+  polarity = results[:, 3],
+  subjectivity = results[:, 4],
+  flesch = results[:, 5],
+  gunning_fog = results[:, 6],
+)
+
+df_fast
+```
+
+```{python}
+max_len_1 = df_fast.select(pl.col("fast_gpt").arr.len().max()).item()
+df_fast_flat = df_fast.with_columns(
+  [pl.col("fast_gpt").arr.get(i).alias(f"fast_gpt_1_{i+1}") for i in range(max_len_1)],
+).drop(["fast_gpt"]).filter(
+    pl.all_horizontal(cs.numeric().is_finite())
+)
+
+df_fast_flat
+```
+
+```{python}
+# X = df.drop(["text", "Is AI", "punct", 'polarity', 'subjectivity', 'flesch', 'gunning_fog']).to_numpy().astype(np.float32)
+X = df_fast_flat.drop(["text", "Is AI"]).to_numpy()
+y = df_fast_flat["Is AI"].cast(pl.Float32).to_numpy()
+```
+
+```{python}
+
+def train_model(model, rocs, accs, f1s, recalls):
+  X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=True)
+
+  model.fit(X_train, y_train)
+
+  # Predict and Evaluate
+  proba_predictions = model.predict_proba(X_test)[:, 1]
+  predictions = model.predict(X_test)
+
+  # print(f"ROC AUC: {roc_auc_score(y_test, proba_predictions):.2%}")
+  # print(f"Accuracy: {accuracy_score(y_test, predictions):.2%}")
+  rocs.append(roc_auc_score(y_test, proba_predictions))
+  accs.append(accuracy_score(y_test, predictions))
+  f1s.append(f1_score(y_test, predictions))
+  recalls.append(recall_score(y_test, predictions))
+
+rocs = []
+accs = []
+f1s = []
+recalls = []
+for i in range(500):
+  model = Pipeline([
+    ('scaler', StandardScaler()),
+    # ('pca', PCA(n_components=0.95)), # Keep 95% of variance
+    ('clf', SVC(kernel='rbf', C=4, probability=True, gamma='scale'))
+  ])
+
+  # model = Pipeline([
+  #   # ('scaler', MinMaxScaler()),
+  #   ('scaler', StandardScaler()),
+  #   # ('pca', PCA(n_components=0.95)), # Keep 95% of variance
+  #   ('clf', LogisticRegression(max_iter=200))
+  # ])
+
+  # model = Pipeline([
+  #   ('scaler', StandardScaler()),
+  #   # ('pca', PCA(n_components=0.95)), # Keep 95% of variance
+  #   ('clf', GradientBoostingClassifier(
+  #       n_estimators=500,        # High number of trees, balanced by early stopping below
+  #       learning_rate=0.01,      # Lower learning rate requires more estimators, yields robust results
+  #       max_depth=6,             # Allows for complex multi-feature interactions
+  #       subsample=0.8,           # Stochastic Gradient Boosting: Uses 80% of data per tree
+  #       max_features='sqrt',     # Considers approx 4-5 features per split (sqrt of 20)
+  #       validation_fraction=0.1, # Sets aside 10% of training data for early stopping
+  #       n_iter_no_change=20,     # Stops training if validation score doesn't improve for 20 trees
+  #       random_state=420         # Seed for reproducibility
+  #   ))
+  #   # ('clf', RandomForestClassifier(
+  #   #     n_estimators=500,         # Total number of trees in the forest
+  #   #     max_depth=6,              # Limits depth to prevent overfitting
+  #   #     max_features='sqrt',      # Randomly selects sqrt(total_features) at each split
+  #   #     bootstrap=True,           # Uses bootstrap samples (similar concept to subsample)
+  #   #     n_jobs=-1,                # Optional: Uses all CPU cores to speed up training
+  #   #     random_state=420          # Seed for reproducibility
+  #   # ))
+  # ])
+
+  train_model(model, rocs, accs, f1s, recalls)
+```
+
+```{python}
+joblib.dump(model, 'models/model_gradient.pkl')
+```
+
+```{python}
+
+```
+
+```{python}
+print(np.mean(rocs))
+sns.histplot(rocs)
+# plt.savefig('rocs_models_gpt_2.pdf')
+# plt.savefig('rocs_models_dolly.pdf')
+```
+

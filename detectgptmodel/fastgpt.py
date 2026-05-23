@@ -15,6 +15,7 @@ from textblob import TextBlob
 import textstat
 import joblib
 import math
+import re
 
 def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_temp: float = 0.8, sampling_temp: float = 1.2) -> tuple[tch.Tensor, tch.Tensor]:
     perterbated_probs = F.softmax(logits / sampling_temp, dim=-1)
@@ -108,6 +109,26 @@ class FastGptDetect:
         # [feat, probs], [feat, probs]
         return list(zip(org_probs, perturbated_probs))
 
+    def predict(self, text: str):
+        value = self.sample_perturbate_text(text, 0.2, [
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
+        ])
+        fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in value]
+
+        return np.array(fast_gpts_1).reshape(14, 12).mean(axis=0)
 
 def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     r"""
@@ -142,19 +163,35 @@ def calc_punctuation(input_string, punctuation=string.punctuation):
     count = sum(1 for char in input_string if char in punctuation)
     return count
 
+def calculate_sentence_length_std(text):
+    # Split text into sentences based on punctuation (. ! ?)
+    sentences = re.split(r'[.!?]+', text)
+    
+    # Clean up empty strings that might result from trailing punctuation
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    # Calculate the length of each sentence (number of words)
+    lengths = [len(s.split()) for s in sentences]
+    
+    # print(f"Sentence lengths (in words): {lengths}")
+    
+    # Standard deviation requires at least 2 data points
+    if len(lengths) < 2:
+        return 0.0 
+        
+    # Calculate and return the sample standard deviation
+    return np.std(lengths)
 
 class GPTChecker:
     def __init__(self):
         self.fast_gpt = FastGptDetect()
         self.model = joblib.load("models/model_gradient.pkl")
 
-    def predict(self, text: str):
-        # org_log, per_log = self.fast_gpt.log_perterbate(text, 0.2, [(0.8, 20.0)])[0]
-        # fast_gpt = get_sampling_discrepancy(org_log, per_log)
-
+    def get_base_features(self, text: str):
         tokens = self.fast_gpt.tokenizer(text)
         ttr = calculate_ttr(tokens)
-        punct = calc_punctuation(text, "-.") / len(text)
+        punct = calc_punctuation(text) / len(text)
+        sentence_std = calculate_sentence_length_std(text)
         text_blob = TextBlob(text)
         polarity = text_blob.polarity
         subjectivity = text_blob.subjectivity
@@ -164,48 +201,23 @@ class GPTChecker:
         base_features = [
             ttr,
             punct,
+            sentence_std,
             polarity,
             subjectivity,
             flesch,
             gunning_fog,
         ]
 
-        logs_1 = self.fast_gpt.sample_perturbate_text(text, 0.2, [
-          # (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-          # (0.8, 1.0), (0.8, 1.2), (1.0, 3.0), (1.0, 3.0), (1.0, 5.0), (0.8, 30),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-            (0.8, 1.0), (0.8, 1.2), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0), (1.0, 5.0),
-        ])
-        
-        fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in logs_1]
-        
-        # 1. DO NOT use .mean(axis=0). Keep it as a 14x12 matrix.
-        # np_pertur_dist_1 = np.concatenate(np.array(fast_gpts_1)).reshape(12, 12)
-        np_pertur_dist_1 = np.array(fast_gpts_1).reshape(12, 12)
+        return base_features
 
-        # 2. Build a batch matrix of 14 instances
-        # For each of the 14 shapes, we append the 6 base features to its 12 perturbation values
-        X_batch = []
-        for row in np_pertur_dist_1:
-            # Combined feature vector length: 6 + 12 = 18 elements
-            combined_features = base_features + row.tolist()
-            X_batch.append(combined_features)
-            
-        X_batch = np.array(X_batch) # Shape is now exactly (14, 18)
-        # 'ttr', 'punct', 'polarity', 'subjectivity', 'flesch', 'gunning_fog'
-        predictions = np.mean(self.model.predict_proba(X_batch)[:, 1])
+    def predict(self, text: str):
+        base_features = self.get_base_features(text)
+        fast_gpt = self.fast_gpt.predict(text)
+
+        combined_features = base_features + fast_gpt.tolist()
+        predictions = self.model.predict_proba([combined_features])[0, 1]
 
         #'fast_gpt', 'ttr', 'puct', 'polarity', 'subjectivity', 'flesch', 'gunning_fog'
-        return {"fast_gpt": predictions * 100, "polarity": polarity, "subjectivity": subjectivity}
+        return {"fast_gpt": predictions * 100, "polarity": base_features[3], "subjectivity": base_features[4], "sentence_std": base_features[2]}
         # return self.model.predict(np.array([[fast_gpt, ttr, puct, polarity, subjectivity, gunning_fog]]))
 
