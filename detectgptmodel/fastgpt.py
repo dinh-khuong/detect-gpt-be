@@ -34,7 +34,7 @@ def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_tem
 
 class FastGptDetect:
     def __init__(self, model="roberta-base") -> None:
-        # model_name = "roberta-large-mnli"
+        # model = "roberta-large-mnli"
         print("load model: " + model)
         self.device = tch.device("cuda" if tch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
@@ -42,42 +42,35 @@ class FastGptDetect:
             model
         )
         self.tokenizer: RobertaTokenizer = RobertaTokenizer.from_pretrained(
-            model, config=self.configuration
+            model
         )
         self.model: RobertaModel = AutoModelForMaskedLM.from_pretrained(
-            model, config=self.configuration
+            model
         )
         self.model.to(self.device)
 
-    def _get_logits(self, inputs) -> tch.Tensor:
+    def _samples_probs(self, inputs, sample: float) -> tuple[tch.Tensor, tch.Tensor]:
+        # perterbating text
         inputs_input_ids: tch.Tensor = inputs['input_ids']
+        masked_inputs = inputs_input_ids.clone()
+        n = math.ceil(inputs_input_ids.shape[-1] * sample)
+
+        masked_indexes = random.sample(range(inputs_input_ids.shape[-1]), n)
+        masked_indexes.sort()
+        # for i in masked_indexes:
+        #     masked_inputs[0][i] = self.tokenizer.mask_token_id
 
         with tch.no_grad():
-            masked_logits = self.model(input_ids=inputs_input_ids, attention_mask=inputs['attention_mask'], use_cache=False).logits
+            masked_logits = self.model(input_ids=masked_inputs, attention_mask=inputs['attention_mask'], use_cache=False).logits[:, masked_indexes, :]
 
-        return masked_logits
+        target_ids = inputs_input_ids[:, masked_indexes]
 
-    # def _samples_probs(self, inputs, sample: float) -> tuple[tch.Tensor, tch.Tensor]:
-    #     # perterbating text
-    #     inputs_input_ids: tch.Tensor = inputs['input_ids']
-    #     masked_inputs = inputs_input_ids.clone()
-    #     n = math.ceil(inputs_input_ids.shape[-1] * sample)
-    #
-    #     masked_indexes = random.sample(range(inputs_input_ids.shape[-1]), n)
-    #     masked_indexes.sort()
-    #     # for i in masked_indexes:
-    #     #     masked_inputs[0][i] = self.tokenizer.mask_token_id
-    #
-    #     with tch.no_grad():
-    #         masked_logits = self.model(input_ids=masked_inputs, attention_mask=inputs['attention_mask'], use_cache=False).logits[:, masked_indexes, :]
-    #
-    #     target_ids = inputs_input_ids[:, masked_indexes]
-    #
-    #     return masked_logits, target_ids
+        return masked_logits, target_ids
 
 
-    def get_text_logits(self, input: str) -> tch.Tensor:
+    def get_text_logits(self, input: str, sample: float) -> tuple[tch.Tensor, tch.Tensor]:
         logits = []
+        target_ids = []
         inputs = self.tokenizer(
             input,
             # max_length=configuration.max_position_embeddings - 2,
@@ -87,41 +80,32 @@ class FastGptDetect:
         inputs = inputs.to(self.device)
         max_position_token = self.configuration.max_position_embeddings - 2
         idx = 0
-        # print(inputs.input_ids.shape)
         while idx < inputs.input_ids.shape[1]:
             inputs_current = {
                 'input_ids': inputs.input_ids[:, idx:idx+max_position_token],
                 'attention_mask': inputs.attention_mask[:, idx:idx+max_position_token],
             }
-            masked_logist = self._get_logits(inputs_current)
+            masked_logist, masked_target_ids = self._samples_probs(inputs_current, sample)
             logits.append(masked_logist)
+            target_ids.append(masked_target_ids)
 
             idx += inputs_current['input_ids'].shape[1]
 
         logits = tch.cat(logits, dim=1)
-        # target_ids = tch.cat(target_ids, dim=-1)
+        target_ids = tch.cat(target_ids, dim=-1)
 
         # [change_seq, logit], [1, change_seq]
-        return logits
+        return logits, target_ids
 
     def sample_perturbate_text(self, input: str, sample: float, temps: list[tuple[float, float]]):
         org_probs = []
         perturbated_probs = []
 
-        logits = self.get_text_logits(input)
+        logits, target_ids = self.get_text_logits(input, sample)
+        target_ids = target_ids.unsqueeze(-1)
 
-        n = math.ceil(logits.shape[1] * sample)
-
-        # print(logits.shape)
         for prob_temp, sampling_temp in temps:
-            masked_indexes = random.sample(range(logits.shape[1]), n)
-            masked_indexes.sort()
-            target_ids = tch.tensor(masked_indexes).unsqueeze(0).unsqueeze(-1).to(self.device)
-
-            masked_logits = logits[:, masked_indexes, :]
-            # masked_logits.to(self.device)
-
-            org_token_probs, perturbated_token_probs = pertubating_text_logits(masked_logits, target_ids, prob_temp=prob_temp, sampling_temp=sampling_temp)
+            org_token_probs, perturbated_token_probs = pertubating_text_logits(logits, target_ids, prob_temp=prob_temp, sampling_temp=sampling_temp)
             org_probs.append(org_token_probs)
             perturbated_probs.append(perturbated_token_probs)
 
@@ -171,10 +155,7 @@ class FastGptDetect:
         ])
         fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in value]
 
-        # fast_gpts_1 = [tensor.detach().cpu() for tensor in fast_gpts_1]
-        # return np.array(fast_gpts_1).reshape(14, 12).mean(axis=0)
         return tch.stack(fast_gpts_1).reshape(14, 12).mean(dim=0)
-
 
 def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     r"""
@@ -194,6 +175,7 @@ def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     score = (org_mul - multitude) / perturbation_std
     # score = (org_x_log - multitude).mean()
     return tch.tensor([score, perturbation_std])
+
 
 def calculate_ttr(text_tokens):
     """Calculates the Type-Token Ratio (TTR) for a given list of tokens."""
