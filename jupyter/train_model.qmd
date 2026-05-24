@@ -35,7 +35,7 @@ from sklearn.decomposition import PCA
 ```
 
 ```{python}
-detect_gpt = FastGptDetect()
+detect_gpt = FastGptDetect(model="roberta-large-mnli")
 ```
 
 ```{python}
@@ -86,15 +86,21 @@ df_fast
 ```
 
 ```{python}
-max_len_1 = df_fast.select(pl.col("fast_gpt").arr.len().max()).item()
+df_fast = pl.read_parquet("data/roberta_nmli_train.parquet")
+df_fast
+```
+
+```{python}
+max_len_1 = df_fast.select(pl.col("fast_gpt").list.len().max()).item()
 df_fast_flat = df_fast.with_columns(
-  [pl.col("fast_gpt").arr.get(i).alias(f"fast_gpt_1_{i+1}") for i in range(max_len_1)],
+  [pl.col("fast_gpt").list.get(i).alias(f"fast_gpt_1_{i+1}") for i in range(max_len_1)],
 ).drop(["fast_gpt"]).filter(
     pl.all_horizontal(cs.numeric().is_finite())
 )
 
 df_fast_flat
 ```
+
 
 ```{python}
 # X = df.drop(["text", "Is AI", "punct", 'polarity', 'subjectivity', 'flesch', 'gunning_fog']).to_numpy().astype(np.float32)
@@ -123,7 +129,7 @@ rocs = []
 accs = []
 f1s = []
 recalls = []
-for i in range(500):
+for i in tqdm(range(500)):
   model = Pipeline([
     ('scaler', StandardScaler()),
     # ('pca', PCA(n_components=0.95)), # Keep 95% of variance
@@ -164,7 +170,7 @@ for i in range(500):
 ```
 
 ```{python}
-joblib.dump(model, 'models/model_gradient.pkl')
+joblib.dump(model, 'models/model_gradient_local.pkl')
 ```
 
 ```{python}

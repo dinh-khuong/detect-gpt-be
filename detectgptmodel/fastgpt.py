@@ -34,7 +34,7 @@ def pertubating_text_logits(logits: tch.Tensor, target_ids: tch.Tensor, prob_tem
 
 class FastGptDetect:
     def __init__(self, model="roberta-base") -> None:
-        # model = "roberta-large-mnli"
+        # model_name = "roberta-large-mnli"
         print("load model: " + model)
         self.device = tch.device("cuda" if tch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
@@ -42,10 +42,10 @@ class FastGptDetect:
             model
         )
         self.tokenizer: RobertaTokenizer = RobertaTokenizer.from_pretrained(
-            model
+            model, config=self.configuration
         )
         self.model: RobertaModel = AutoModelForMaskedLM.from_pretrained(
-            model
+            model, config=self.configuration
         )
         self.model.to(self.device)
 
@@ -57,8 +57,8 @@ class FastGptDetect:
 
         masked_indexes = random.sample(range(inputs_input_ids.shape[-1]), n)
         masked_indexes.sort()
-        for i in masked_indexes:
-            masked_inputs[0][i] = self.tokenizer.mask_token_id
+        # for i in masked_indexes:
+        #     masked_inputs[0][i] = self.tokenizer.mask_token_id
 
         with tch.no_grad():
             masked_logits = self.model(input_ids=masked_inputs, attention_mask=inputs['attention_mask'], use_cache=False).logits[:, masked_indexes, :]
@@ -155,7 +155,10 @@ class FastGptDetect:
         ])
         fast_gpts_1 = [get_sampling_discrepancy(log[0], log[1]) for log in value]
 
+        # fast_gpts_1 = [tensor.detach().cpu() for tensor in fast_gpts_1]
+        # return np.array(fast_gpts_1).reshape(14, 12).mean(axis=0)
         return tch.stack(fast_gpts_1).reshape(14, 12).mean(dim=0)
+
 
 def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     r"""
@@ -177,6 +180,7 @@ def get_sampling_discrepancy(org_x: tch.Tensor, perturbation_x: tch.Tensor):
     return tch.tensor([score, perturbation_std])
 
 
+
 def calculate_ttr(text_tokens):
     """Calculates the Type-Token Ratio (TTR) for a given list of tokens."""
     word_count = len(text_tokens)
@@ -193,19 +197,19 @@ def calc_punctuation(input_string, punctuation=string.punctuation):
 def calculate_sentence_length_std(text):
     # Split text into sentences based on punctuation (. ! ?)
     sentences = re.split(r'[.!?]+', text)
-    
+
     # Clean up empty strings that might result from trailing punctuation
     sentences = [s.strip() for s in sentences if s.strip()]
-    
+
     # Calculate the length of each sentence (number of words)
     lengths = [len(s.split()) for s in sentences]
-    
+
     # print(f"Sentence lengths (in words): {lengths}")
-    
+
     # Standard deviation requires at least 2 data points
     if len(lengths) < 2:
-        return 0.0 
-        
+        return 0.0
+
     # Calculate and return the sample standard deviation
     return np.std(lengths)
 
