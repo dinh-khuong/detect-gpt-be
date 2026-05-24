@@ -39,7 +39,7 @@ detect_gpt = FastGptDetect(model="roberta-large-mnli")
 ```
 
 ```{python}
-N_SAMPLE_SIZE = 1000
+N_SAMPLE_SIZE = 1
 dolly_df = pl.read_parquet("data/dolly_response.parquet")
 xsum_df = pl.read_parquet("data/xsum.parquet").rename({'document': 'text'})['text', ].with_columns(pl.lit(False).alias("Is AI")) \
 .filter(~pl.col("text").str.split(' ').list.len()> 200)[:N_SAMPLE_SIZE]
@@ -100,7 +100,6 @@ df_fast_flat = df_fast.with_columns(
 
 df_fast_flat
 ```
-
 
 ```{python}
 # X = df.drop(["text", "Is AI", "punct", 'polarity', 'subjectivity', 'flesch', 'gunning_fog']).to_numpy().astype(np.float32)
