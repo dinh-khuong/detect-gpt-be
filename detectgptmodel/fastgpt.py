@@ -114,7 +114,7 @@ class FastGptDetect:
         return list(zip(org_probs, perturbated_probs))
 
     def get_base_features(self, text: str):
-        tokens = self.tokenizer(text)
+        tokens = self.tokenizer(text).input_ids
         ttr = calculate_ttr(tokens)
         punct = calc_punctuation(text, "-") / len(text)
         sentence_std = calculate_sentence_length_std(text)
