@@ -5,11 +5,14 @@ Tái hiện đúng mô hình trong Colab ``Binoculars.ipynb`` (cell "PHÂN TÍCH
     make_model(C=0.3) = SimpleImputer(median) -> StandardScaler
                         -> LogisticRegression(C=0.3, class_weight="balanced")
 
-thí nghiệm "Human vs cả hai". Đặc trưng mặc định: perf_prob_mean (top 1 trong
-Colab), perf_nll_mean (mean NLL) và perf_ppl (perplexity). Mô hình cuối được
-fit trên toàn bộ dữ liệu.
+thí nghiệm "Human vs cả hai". Đặc trưng mặc định:
+    * perf_prob_mean (top 1 trong Colab), perf_nll_mean (mean NLL), perf_ppl (perplexity)
+    * 7 đặc trưng của mô hình cũ: base_ttr, base_punct, base_sentence_std,
+      base_polarity, base_subjectivity, base_flesch, base_gunning_fog
+      (đọc từ file base_<tên CSV> cùng thư mục, tạo bằng build_base_features)
+Mô hình cuối được fit trên toàn bộ dữ liệu.
 
-Chạy (từ thư mục detect-gpt-be):
+Chạy (từ thư mục detect-gpt-be, sau khi đã chạy build_base_features):
 
     python -m detectgptmodel.train_probmean_classifier \\
         --human ../data/scores.csv \\
@@ -33,7 +36,22 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-DEFAULT_FEATURES = ["perf_prob_mean", "perf_nll_mean", "perf_ppl"]
+PERF_FEATURES = ["perf_prob_mean", "perf_nll_mean", "perf_ppl"]
+BASE_FEATURES = ["base_ttr", "base_punct", "base_sentence_std", "base_polarity",
+                 "base_subjectivity", "base_flesch", "base_gunning_fog"]
+DEFAULT_FEATURES = PERF_FEATURES + BASE_FEATURES
+
+
+def load_csv(path: str, feats: list[str]) -> pd.DataFrame:
+    """Đọc CSV đặc trưng; cột base_* lấy từ file base_<tên> cùng thư mục (cùng thứ tự dòng)."""
+    df = pd.read_csv(path)
+    if any(f.startswith("base_") for f in feats):
+        p = Path(path)
+        base = pd.read_csv(p.with_name("base_" + p.name)).drop(columns="idx")
+        if len(base) != len(df):
+            raise ValueError(f"{p.name}: số dòng khác file base_{p.name}")
+        df = pd.concat([df.reset_index(drop=True), base], axis=1)
+    return df[feats]
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "models" / "prob_mean_logreg.pkl"
 
 
@@ -48,14 +66,14 @@ def main() -> None:
     ap.add_argument("--human", nargs="+", required=True, help="CSV văn bản người viết (nhãn 0)")
     ap.add_argument("--ai", nargs="+", required=True, help="CSV văn bản AI (nhãn 1)")
     ap.add_argument("--features", nargs="+", default=DEFAULT_FEATURES,
-                    help="cột đặc trưng (hỗ trợ perf_prob_mean, perf_nll_mean, perf_ppl)")
+                    help="cột đặc trưng (perf_prob_mean, perf_nll_mean, perf_ppl, base_*)")
     ap.add_argument("--C", type=float, default=0.3)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
 
     feats = args.features
-    parts = [pd.read_csv(f)[feats].assign(y_ai=0) for f in args.human]
-    parts += [pd.read_csv(f)[feats].assign(y_ai=1) for f in args.ai]
+    parts = [load_csv(f, feats).assign(y_ai=0) for f in args.human]
+    parts += [load_csv(f, feats).assign(y_ai=1) for f in args.ai]
     df = pd.concat(parts, ignore_index=True)
     X, y = df[feats].values, df["y_ai"].values
     print(f"Đặc trưng: {feats}")
