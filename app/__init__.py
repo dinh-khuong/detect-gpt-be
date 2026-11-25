@@ -1,11 +1,5 @@
-from detectgptmodel.fastgpt import GPTChecker
-import sys
+from .detectors import preload_default
 
-def get_model():
-    # Only load if we aren't running a migration/test command
-    if 'runserver' in sys.argv :
-        return GPTChecker(model="roberta-large-mnli")
-
-    return None
-    
-gptDetectModel = get_model()
+# Nạp sẵn phương pháp mặc định (prob_mean) khi chạy runserver.
+# Phương pháp cũ (fastgpt) sẽ được nạp khi có request đầu tiên dùng nó.
+preload_default()
