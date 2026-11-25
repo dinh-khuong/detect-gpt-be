@@ -5,8 +5,9 @@ Tái hiện đúng mô hình trong Colab ``Binoculars.ipynb`` (cell "PHÂN TÍCH
     make_model(C=0.3) = SimpleImputer(median) -> StandardScaler
                         -> LogisticRegression(C=0.3, class_weight="balanced")
 
-thí nghiệm "Human vs cả hai", bộ đặc trưng "top 1 (perf_prob_mean)"
-(CV AUC 0.998 ± 0.001). Mô hình cuối được fit trên toàn bộ dữ liệu.
+thí nghiệm "Human vs cả hai". Đặc trưng mặc định: perf_prob_mean (top 1 trong
+Colab), perf_nll_mean (mean NLL) và perf_ppl (perplexity). Mô hình cuối được
+fit trên toàn bộ dữ liệu.
 
 Chạy (từ thư mục detect-gpt-be):
 
@@ -32,7 +33,7 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-FEATURE = "perf_prob_mean"
+DEFAULT_FEATURES = ["perf_prob_mean", "perf_nll_mean", "perf_ppl"]
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "models" / "prob_mean_logreg.pkl"
 
 
@@ -42,39 +43,41 @@ def make_model(C: float = 0.3):
                          LogisticRegression(C=C, class_weight="balanced", max_iter=2000))
 
 
-def decision_threshold(model) -> float:
-    """Giá trị prob_mean tại đó P(AI) = 0.5 (ranh giới quyết định của mô hình)."""
-    scaler, clf = model[1], model[-1]
-    return float(scaler.mean_[0] - clf.intercept_[0] * scaler.scale_[0] / clf.coef_[0, 0])
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--human", nargs="+", required=True, help="CSV văn bản người viết (nhãn 0)")
     ap.add_argument("--ai", nargs="+", required=True, help="CSV văn bản AI (nhãn 1)")
+    ap.add_argument("--features", nargs="+", default=DEFAULT_FEATURES,
+                    help="cột đặc trưng (hỗ trợ perf_prob_mean, perf_nll_mean, perf_ppl)")
     ap.add_argument("--C", type=float, default=0.3)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
 
-    parts = [pd.read_csv(f)[[FEATURE]].assign(y_ai=0) for f in args.human]
-    parts += [pd.read_csv(f)[[FEATURE]].assign(y_ai=1) for f in args.ai]
+    feats = args.features
+    parts = [pd.read_csv(f)[feats].assign(y_ai=0) for f in args.human]
+    parts += [pd.read_csv(f)[feats].assign(y_ai=1) for f in args.ai]
     df = pd.concat(parts, ignore_index=True)
-    X, y = df[[FEATURE]].values, df["y_ai"].values
+    X, y = df[feats].values, df["y_ai"].values
+    print(f"Đặc trưng: {feats}")
     print(f"Human: {(y == 0).sum()}  AI: {(y == 1).sum()}")
 
     cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=20, random_state=0)
-    aucs = [roc_auc_score(y[te], make_model(args.C).fit(X[tr], y[tr]).predict_proba(X[te])[:, 1])
-            for tr, te in cv.split(X, y)]
-    print(f"CV AUC: {np.mean(aucs):.3f} ± {np.std(aucs):.3f}")
+    aucs, accs = [], []
+    for tr, te in cv.split(X, y):
+        m = make_model(args.C).fit(X[tr], y[tr])
+        aucs.append(roc_auc_score(y[te], m.predict_proba(X[te])[:, 1]))
+        accs.append((m.predict(X[te]) == y[te]).mean())
+    print(f"CV AUC: {np.mean(aucs):.4f} ± {np.std(aucs):.4f}")
+    print(f"CV Accuracy: {np.mean(accs):.4f} ± {np.std(accs):.4f}")
 
     model = make_model(args.C).fit(X, y)
-    acc = (model.predict(X) == y).mean()
-    print(f"Ngưỡng quyết định (P(AI)=0.5): {FEATURE} = {decision_threshold(model):.4f}")
-    print(f"Accuracy trên toàn bộ dữ liệu: {acc:.4f}")
+    coef = model[-1].coef_[0]
+    print("Hệ số (đặc trưng đã chuẩn hoá):", {f: round(float(c), 4) for f, c in zip(feats, coef)},
+          "intercept:", round(float(model[-1].intercept_[0]), 4))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "feature": FEATURE, "C": args.C,
-                 "cv_auc": float(np.mean(aucs))}, args.out)
+    joblib.dump({"model": model, "features": feats, "C": args.C,
+                 "cv_auc": float(np.mean(aucs)), "cv_acc": float(np.mean(accs))}, args.out)
     print(f"Đã lưu: {args.out}")
 
 

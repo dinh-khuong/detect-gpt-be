@@ -12,12 +12,14 @@ Văn bản dài được cắt thành nhiều đoạn (chunk) ~512 token (giốn
 luyện ~300-600 token/đoạn). Mỗi đoạn được chấm kèm 128 token ngữ cảnh của đoạn
 trước (không tính điểm phần ngữ cảnh), sau đó gộp lại:
     * prob_mean tổng = trung bình theo số token của các đoạn
-    * score (0-100)  = P(AI | prob_mean) * 100 từ mô hình hồi quy logistic
+    * nll_mean       = -mean_t log p(x_t | x_<t)   (cross-entropy)
+    * ppl            = exp(nll_mean)               (perplexity)
+    * score (0-100)  = P(AI | prob_mean, nll_mean, ppl) * 100 từ mô hình hồi quy logistic
     * ai_fraction    = tỉ lệ token nằm trong các đoạn bị đánh giá là AI
 
 Mô hình hồi quy logistic (models/prob_mean_logreg.pkl) là mô hình trong Colab
 Binoculars.ipynb (SimpleImputer -> StandardScaler -> LogisticRegression(C=0.3,
-class_weight="balanced"), đặc trưng perf_prob_mean), tạo bằng
+class_weight="balanced"), đặc trưng perf_prob_mean, perf_nll_mean, perf_ppl), tạo bằng
 ``python -m detectgptmodel.train_probmean_classifier``. Đổi đường dẫn bằng biến
 môi trường PROB_MEAN_CLASSIFIER.
 """
@@ -29,6 +31,8 @@ import re
 import threading
 from dataclasses import dataclass
 
+import math
+
 import joblib
 import numpy as np
 import torch as tch
@@ -37,6 +41,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 # Mô hình hồi quy logistic phân loại theo prob_mean (xem docstring).
+FEATURE_KEYS = ("prob_mean", "nll_mean", "ppl")
 DEFAULT_CLASSIFIER = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "prob_mean_logreg.pkl"
 )
@@ -96,9 +101,17 @@ class ProbMeanDetector:
             )
         bundle = joblib.load(path)
         self.classifier = bundle["model"]
-        # Ngưỡng quyết định của mô hình: prob_mean tại đó P(AI) = 0.5
-        scaler, clf = self.classifier[1], self.classifier[-1]
-        self.threshold = float(scaler.mean_[0] - clf.intercept_[0] * scaler.scale_[0] / clf.coef_[0, 0])
+        # Tên cột trong CSV huấn luyện, vd ["perf_prob_mean", "perf_nll_mean", "perf_ppl"]
+        self.features: list[str] = bundle.get("features") or [bundle["feature"]]
+        unknown = [f for f in self.features if f.removeprefix("perf_") not in FEATURE_KEYS]
+        if unknown:
+            raise ValueError(f"Mô hình hồi quy dùng đặc trưng chưa hỗ trợ: {unknown}")
+        self.cv_auc = bundle.get("cv_auc")
+        # Chỉ có ngưỡng 1 chiều khi mô hình dùng đúng 1 đặc trưng prob_mean
+        self.threshold = None
+        if self.features == ["perf_prob_mean"]:
+            scaler, clf = self.classifier[1], self.classifier[-1]
+            self.threshold = float(scaler.mean_[0] - clf.intercept_[0] * scaler.scale_[0] / clf.coef_[0, 0])
         self.chunk_tokens = chunk_tokens or _env_int("PROB_MEAN_CHUNK_TOKENS", DEFAULT_CHUNK_TOKENS)
         self.max_tokens = max_tokens or _env_int("PROB_MEAN_MAX_TOKENS", DEFAULT_MAX_TOKENS)
         self.context_tokens = _env_int("PROB_MEAN_CONTEXT_TOKENS", DEFAULT_CONTEXT_TOKENS)
@@ -150,8 +163,8 @@ class ProbMeanDetector:
 
     # ------------------------------------------------------------------ scoring
     @tch.no_grad()
-    def _token_probs(self, batch_ids: list[list[int]], n_score: list[int]) -> list[tch.Tensor]:
-        """Xác suất của token thật cho ``n_score`` token cuối của từng chuỗi
+    def _token_logprobs(self, batch_ids: list[list[int]], n_score: list[int]) -> list[tch.Tensor]:
+        """Log-xác suất của token thật cho ``n_score`` token cuối của từng chuỗi
         (phần trước đó chỉ làm ngữ cảnh). Token đầu chuỗi không có xác suất."""
         pad = self.tokenizer.pad_token_id
         max_len = max(len(x) for x in batch_ids)
@@ -173,12 +186,22 @@ class ProbMeanDetector:
             lg = logits[i, n - 1 - k : n - 1].float()     # [k, vocab]
             tgt = ids[i, n - k : n]
             ll = lg.gather(1, tgt[:, None]).squeeze(1) - tch.logsumexp(lg, dim=-1)
-            out.append(ll.exp().cpu())
+            out.append(ll.cpu())
         return out
 
-    def _prob_to_score(self, prob_mean: float) -> float:
-        p_ai = self.classifier.predict_proba(np.array([[prob_mean]]))[0, 1]
-        return float(p_ai) * 100.0
+    @staticmethod
+    def _features(ll: tch.Tensor) -> dict[str, float]:
+        """Đặc trưng giống _per_model_feats trong notebook (ll = log p của token thật)."""
+        nll_mean = float(-ll.mean())
+        return {
+            "prob_mean": float(ll.exp().mean()),
+            "nll_mean": nll_mean,
+            "ppl": math.exp(nll_mean),
+        }
+
+    def _score(self, feats: dict[str, float]) -> float:
+        x = np.array([[feats[f.removeprefix("perf_")] for f in self.features]])
+        return float(self.classifier.predict_proba(x)[0, 1]) * 100.0
 
     def predict(self, text: str) -> dict:
         text = text.strip()
@@ -194,22 +217,22 @@ class ProbMeanDetector:
             for b in range(0, len(chunks), self.batch_size):
                 batch = chunks[b : b + self.batch_size]
                 seqs = [ids[max(0, c.tok_start - self.context_tokens) : c.tok_end] for c in batch]
-                probs.extend(self._token_probs(seqs, [c.tok_end - c.tok_start for c in batch]))
+                probs.extend(self._token_logprobs(seqs, [c.tok_end - c.tok_start for c in batch]))
 
         chunk_results = []
         total_probs = []
         for c, p in zip(chunks, probs):
             if p.numel() == 0:
                 continue
-            pm = float(p.mean())
-            score = self._prob_to_score(pm)
+            feats = self._features(p)
+            score = self._score(feats)
             total_probs.append(p)
             chunk_results.append({
                 "index": c.index,
                 "start": c.char_start,
                 "end": c.char_end,
                 "n_tokens": c.tok_end - c.tok_start,
-                "prob_mean": pm,
+                **feats,
                 "score": score,
                 "is_ai": score >= 50.0,
             })
@@ -217,8 +240,9 @@ class ProbMeanDetector:
         if not total_probs:
             raise ValueError("Văn bản quá ngắn để phân tích (cần ít nhất 2 token).")
 
-        all_probs = tch.cat(total_probs)
-        prob_mean = float(all_probs.mean())
+        all_ll = tch.cat(total_probs)
+        feats = self._features(all_ll)
+        all_probs = all_ll.exp()
         n_scored = sum(r["n_tokens"] for r in chunk_results)
         ai_tokens = sum(r["n_tokens"] for r in chunk_results if r["is_ai"])
         n_tokens = len(ids)
@@ -232,10 +256,12 @@ class ProbMeanDetector:
         return {
             "method": self.name,
             "model": self.model_name,
-            "score": self._prob_to_score(prob_mean),
-            "prob_mean": prob_mean,
+            "score": self._score(feats),
+            **feats,
             "prob_std": float(all_probs.std()) if all_probs.numel() > 1 else 0.0,
             "threshold": self.threshold,
+            "features": self.features,
+            "cv_auc": self.cv_auc,
             "n_tokens": n_tokens,
             "n_chunks": len(chunk_results),
             "ai_fraction": ai_tokens / n_scored if n_scored else 0.0,
