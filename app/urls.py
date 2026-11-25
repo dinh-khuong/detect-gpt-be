@@ -11,4 +11,6 @@ urlpatterns = [
 
     path('auth/me/', views.UserMeView.as_view(), name="Auth me"),
     path('detect-ai/', views.detect_ai, name="Detect AI"),
+    path('detect-ai/methods/', views.detect_methods, name="Detect AI methods"),
+    path('extract-text/', views.extract_text, name="Extract text"),
 ]

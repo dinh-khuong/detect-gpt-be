@@ -1,0 +1,11 @@
+# Phụ thuộc cho phương pháp prob_mean (Qwen2.5-1.5B-Instruct) và đọc file văn bản
+torch
+transformers>=4.56  # dùng tham số dtype=
+accelerate
+pypdf
+python-docx
+odfpy
+python-pptx
+openpyxl
+beautifulsoup4
+striprtf
