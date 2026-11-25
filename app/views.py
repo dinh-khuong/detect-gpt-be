@@ -92,6 +92,11 @@ def detect_ai(request: Request):
 
     try:
         detector = get_detector(method)
+    except Exception as e:  # thiếu file mô hình, lỗi tải model...
+        return Response({'error': f"Không nạp được phương pháp '{method}': {e}"},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    try:
         result = detector.predict(user_text)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

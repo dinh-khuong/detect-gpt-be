@@ -7,3 +7,6 @@ answer*.json
 *__pycache__*
 *.env
 *cpython-314.pyc
+
+# mô hình hồi quy của prob_mean (nhỏ, cần để chạy)
+!models/prob_mean_logreg.pkl

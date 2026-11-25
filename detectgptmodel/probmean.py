@@ -12,31 +12,34 @@ Văn bản dài được cắt thành nhiều đoạn (chunk) ~512 token (giốn
 luyện ~300-600 token/đoạn). Mỗi đoạn được chấm kèm 128 token ngữ cảnh của đoạn
 trước (không tính điểm phần ngữ cảnh), sau đó gộp lại:
     * prob_mean tổng = trung bình theo số token của các đoạn
-    * score (0-100)  = sigmoid(slope * (prob_mean - threshold)) * 100
+    * score (0-100)  = P(AI | prob_mean) * 100 từ mô hình hồi quy logistic
     * ai_fraction    = tỉ lệ token nằm trong các đoạn bị đánh giá là AI
 
-Ngưỡng/độ dốc được hiệu chỉnh bằng logistic regression trên data/scores.csv
-(human), data/scores_ai.csv và data/ai_high_pll_scores.csv (AI) với cột
-perf_prob_mean: threshold ≈ 0.284, slope ≈ 79.5 (AUROC ≈ 0.998).
-Có thể ghi đè bằng biến môi trường PROB_MEAN_THRESHOLD / PROB_MEAN_SLOPE.
+Mô hình hồi quy logistic (models/prob_mean_logreg.pkl) là mô hình trong Colab
+Binoculars.ipynb (SimpleImputer -> StandardScaler -> LogisticRegression(C=0.3,
+class_weight="balanced"), đặc trưng perf_prob_mean), tạo bằng
+``python -m detectgptmodel.train_probmean_classifier``. Đổi đường dẫn bằng biến
+môi trường PROB_MEAN_CLASSIFIER.
 """
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import threading
 from dataclasses import dataclass
 
+import joblib
+import numpy as np
 import torch as tch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
-# Hiệu chỉnh từ dữ liệu (xem docstring).
-DEFAULT_THRESHOLD = 0.284
-DEFAULT_SLOPE = 79.5
+# Mô hình hồi quy logistic phân loại theo prob_mean (xem docstring).
+DEFAULT_CLASSIFIER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "prob_mean_logreg.pkl"
+)
 
 # Độ dài đoạn: dữ liệu huấn luyện có trung bình ~530-560 token / đoạn.
 DEFAULT_CHUNK_TOKENS = 512
@@ -46,13 +49,6 @@ DEFAULT_MAX_TOKENS = 200_000    # giới hạn an toàn cho văn bản rất dà
 # Số token ngữ cảnh (của đoạn trước) đưa thêm vào trước mỗi đoạn, không được chấm
 # điểm, để token đầu đoạn không bị mất ngữ cảnh (sliding window có chồng lấn).
 DEFAULT_CONTEXT_TOKENS = 128
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, default))
-    except ValueError:
-        return default
 
 
 def _env_int(name: str, default: int) -> int:
@@ -82,8 +78,7 @@ class ProbMeanDetector:
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
-        threshold: float | None = None,
-        slope: float | None = None,
+        classifier_path: str | None = None,
         chunk_tokens: int | None = None,
         max_tokens: int | None = None,
         batch_size: int | None = None,
@@ -94,8 +89,16 @@ class ProbMeanDetector:
         self.device = tch.device(device or ("cuda" if tch.cuda.is_available() else "cpu"))
         print(f"Using device: {self.device}")
 
-        self.threshold = threshold if threshold is not None else _env_float("PROB_MEAN_THRESHOLD", DEFAULT_THRESHOLD)
-        self.slope = slope if slope is not None else _env_float("PROB_MEAN_SLOPE", DEFAULT_SLOPE)
+        path = classifier_path or os.environ.get("PROB_MEAN_CLASSIFIER", DEFAULT_CLASSIFIER)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Không tìm thấy mô hình hồi quy '{path}'. Chạy: python -m detectgptmodel.train_probmean_classifier"
+            )
+        bundle = joblib.load(path)
+        self.classifier = bundle["model"]
+        # Ngưỡng quyết định của mô hình: prob_mean tại đó P(AI) = 0.5
+        scaler, clf = self.classifier[1], self.classifier[-1]
+        self.threshold = float(scaler.mean_[0] - clf.intercept_[0] * scaler.scale_[0] / clf.coef_[0, 0])
         self.chunk_tokens = chunk_tokens or _env_int("PROB_MEAN_CHUNK_TOKENS", DEFAULT_CHUNK_TOKENS)
         self.max_tokens = max_tokens or _env_int("PROB_MEAN_MAX_TOKENS", DEFAULT_MAX_TOKENS)
         self.context_tokens = _env_int("PROB_MEAN_CONTEXT_TOKENS", DEFAULT_CONTEXT_TOKENS)
@@ -174,8 +177,8 @@ class ProbMeanDetector:
         return out
 
     def _prob_to_score(self, prob_mean: float) -> float:
-        z = self.slope * (prob_mean - self.threshold)
-        return 100.0 / (1.0 + math.exp(-z))
+        p_ai = self.classifier.predict_proba(np.array([[prob_mean]]))[0, 1]
+        return float(p_ai) * 100.0
 
     def predict(self, text: str) -> dict:
         text = text.strip()
